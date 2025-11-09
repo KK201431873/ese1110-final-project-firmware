@@ -212,8 +212,9 @@ void updateServo() {
 // === Motor encoder processing (100 Hz) ================
 // =====================================================
 void processEncoder() {
-  leftEncoder += 100;
-  rightEncoder += 50;
+  double now = millis()/1.0e3;
+  leftEncoder += (int)(100 * (0.3*sin(0.103*now + 0.314*cos(0.063*now)) + 0.7*cos(0.1*tan(0.01*now) + 0.084*now + 0.143*cos(0.01*now))));
+  rightEncoder += (int)(100 * (0.45*cos(0.03*now - 0.287*sin(0.021*now)) + 0.55*sin(0.153*now - 0.09*sin(0.061*now))));
 }
 
 void printEncoder() {
