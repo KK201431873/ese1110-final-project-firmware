@@ -1,20 +1,16 @@
 #include <Wire.h>
-#include <Servo.h>
 
 #define MPU_ADDR 0x68
-#define INTAKE_SERVO_PIN 3
 
 // === Timing configuration ===
-const int IMU_HZ = 100;
-const int IMU_PRINT_HZ = 20;
-const int ENCODER_HZ = 50;
-const int ENCODER_PRINT_HZ = 20;
-const int SERVO_HZ = 20;
+const int IMU_HZ = 80;
+const int IMU_PRINT_HZ = 80;
+const int ENCODER_HZ = 80;
+const int ENCODER_PRINT_HZ = 80;
 const unsigned long IMU_INTERVAL_US = 1000000UL / IMU_HZ;
 const unsigned long IMU_PRINT_INTERVAL_US = 1000000UL / IMU_PRINT_HZ;
 const unsigned long ENCODER_INTERVAL_US = 1000000UL / ENCODER_HZ;
 const unsigned long ENCODER_PRINT_INTERVAL_US = 1000000UL / ENCODER_PRINT_HZ;
-const unsigned long SERVO_INTERVAL_US = 1000000UL / SERVO_HZ;
 
 // === IMU offsets ===
 const float gx_offset = 1.37;
@@ -23,10 +19,6 @@ const float gz_offset = -0.85;
 
 // === Orientation state ===
 float roll = 0, pitch = 0, yaw = 0;
-
-// === Servo ===
-Servo intakeServo;
-int servoTargetDeg = 90;  // default position (degrees)
 
 // === Motor encoder states ===
 long leftEncoder = 0;
@@ -37,7 +29,6 @@ unsigned long lastIMU = 0;
 unsigned long lastIMUPrint = 0;
 unsigned long lastEncoder = 0;
 unsigned long lastEncoderPrint = 0;
-unsigned long lastServo = 0;
 
 // === Frequency monitoring ===
 const bool printFrequencies = false; 
@@ -46,7 +37,6 @@ unsigned long imuCount = 0;
 unsigned long imuPrintCount = 0;
 unsigned long encoderCount = 0;
 unsigned long encoderPrintCount = 0;
-unsigned long servoCount = 0;
 
 
 // === Setup ===
@@ -60,9 +50,6 @@ void setup() {
   Wire.write(0x6B);
   Wire.write(0);
   Wire.endTransmission(true);
-
-  intakeServo.attach(INTAKE_SERVO_PIN);
-  intakeServo.write(servoTargetDeg);
 }
 
 // === Main loop ===
@@ -107,18 +94,6 @@ void loop() {
       lastEncoderPrint = now;
   }
 
-  // Servo Control @ 20 Hz 
-  if (now - lastServo >= SERVO_INTERVAL_US) {
-    servoCount++;
-    updateServo();
-    lastServo += SERVO_INTERVAL_US;
-    if ((long)(now - lastServo) >= SERVO_INTERVAL_US)
-      lastServo = now;
-  }
-
-  // Serial input (asynchronous) 
-  processSerial();
-
   // Frequency monitor (1 Hz print) 
   if (printFrequencies) {
   static unsigned long lastFreqPrint = 0;
@@ -128,10 +103,9 @@ void loop() {
       Serial.print(" Hz, IMU Print: ");      Serial.print(imuPrintCount);
       Serial.print(" Hz, Encoder: ");        Serial.print(encoderCount);
       Serial.print(" Hz, Encoder Print: ");  Serial.print(encoderPrintCount);
-      Serial.print(" Hz, Servo: ");          Serial.print(servoCount);
       Serial.println(" Hz");
 
-      imuCount = imuPrintCount = encoderCount = encoderPrintCount = servoCount = 0;
+      imuCount = imuPrintCount = encoderCount = encoderPrintCount = 0;
       lastFreqPrint = nowMs;
     }
   }
@@ -202,13 +176,6 @@ void printIMU() {
 }
 
 // =====================================================
-// === Servo update (20 Hz) ============================
-// =====================================================
-void updateServo() {
-  intakeServo.write(servoTargetDeg);
-}
-
-// =====================================================
 // === Motor encoder processing (100 Hz) ================
 // =====================================================
 void processEncoder() {
@@ -223,42 +190,3 @@ void printEncoder() {
   Serial.print("sensor.encoder.right:");
   Serial.println(rightEncoder);
 }
-
-// =====================================================
-// === Serial message parsing ==========================
-// =====================================================
-void processSerial() {
-  static String buffer = "";
-
-  while (Serial.available() > 0) {
-    char c = Serial.read();
-    if (c == '\n' || c == '\r') {
-      if (buffer.length() == 0) continue;
-
-      int sepIndex = buffer.indexOf(':');
-      if (sepIndex > 0) {
-        String key = buffer.substring(0, sepIndex);
-        String valStr = buffer.substring(sepIndex + 1);
-        int val = valStr.toInt();
-
-        if (key == "command.intake.position") {
-          servoTargetDeg = constrain(val, 0, 180);
-        } 
-        else if (key == "command.intake.motor") {
-          // handle intake speed control
-        } 
-        else if (key == "command.drive.left") {
-          // handle left motor speed
-        } 
-        else if (key == "command.drive.right") {
-          // handle right motor speed
-        }
-      }
-      buffer = "";
-    } 
-    else {
-      buffer += c;
-    }
-  }
-}
-
