@@ -1,97 +1,106 @@
 #include <Wire.h>
+#include <Encoder.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
+#include <math.h>
 
-#define MPU_ADDR 0x68
+// =====================================================
+// === Robot configuration ===
+// =====================================================
+const float WHEEL_DIAMETER = 0.065;   // m
+const float WHEEL_BASE = 0.332;       // m
+const float TICKS_PER_REV = 1024.0;
+const float GEAR_RATIO = 1.0;
+const float ALPHA = 0.05;             // IMU yaw fusion weight
 
+// =====================================================
 // === Timing configuration ===
-const int IMU_HZ = 80;
-const int IMU_PRINT_HZ = 80;
-const int ENCODER_HZ = 80;
-const int ENCODER_PRINT_HZ = 80;
+// =====================================================
+const int IMU_HZ = 100;
+const int LOCALIZATION_HZ = 1000;     // Encoder localization at 1 kHz
+const int PRINT_HZ = 100;             // Unified print frequency
+
 const unsigned long IMU_INTERVAL_US = 1000000UL / IMU_HZ;
-const unsigned long IMU_PRINT_INTERVAL_US = 1000000UL / IMU_PRINT_HZ;
-const unsigned long ENCODER_INTERVAL_US = 1000000UL / ENCODER_HZ;
-const unsigned long ENCODER_PRINT_INTERVAL_US = 1000000UL / ENCODER_PRINT_HZ;
+const unsigned long LOC_INTERVAL_US = 1000000UL / LOCALIZATION_HZ;
+const unsigned long PRINT_INTERVAL_US = 1000000UL / PRINT_HZ;
 
-// === IMU offsets ===
-const float gx_offset = 1.37;
-const float gy_offset = 9.87;
-const float gz_offset = -0.85;
+// === IMU object ===
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28, &Wire);
 
-// === Orientation state ===
-float roll = 0, pitch = 0, yaw = 0;
+// =====================================================
+// === State ===
+// =====================================================
+float roll = 0, pitch = 0, yaw = 0;   // IMU orientation (deg)
+long leftEncoder = 0, rightEncoder = 0;
+long lastLeft = 0, lastRight = 0;
 
-// === Motor encoder states ===
-long leftEncoder = 0;
-long rightEncoder = 0;
+// Robot pose (meters, radians)
+float poseX = 0.0, poseY = 0.0, poseH = 0.0;
 
-// === Timing trackers ===
+// Timing trackers
 unsigned long lastIMU = 0;
-unsigned long lastIMUPrint = 0;
-unsigned long lastEncoder = 0;
-unsigned long lastEncoderPrint = 0;
+unsigned long lastLoc = 0;
+unsigned long lastPrint = 0;
 
 // === Frequency monitoring ===
 const bool printFrequencies = false; 
 unsigned long lastFreqPrint = 0;
 unsigned long imuCount = 0;
-unsigned long imuPrintCount = 0;
-unsigned long encoderCount = 0;
-unsigned long encoderPrintCount = 0;
+unsigned long localizationCount = 0;
+unsigned long printCount = 0;
 
 
+// =====================================================
 // === Setup ===
+// =====================================================
 void setup() {
   Serial.begin(115200);
   Wire.begin();
-  Wire.setClock(400000);  // 400 kHz Fast Mode I2C
+  Wire.setClock(400000);
 
-  // Wake up MPU
-  Wire.beginTransmission(MPU_ADDR);
-  Wire.write(0x6B);
-  Wire.write(0);
-  Wire.endTransmission(true);
+  if (!bno.begin()) {
+    Serial.println("ERROR: BNO055 not detected. Check wiring!");
+    while (1);
+  }
+
+  bno.setExtCrystalUse(true);
+  Serial.println("BNO055 initialized successfully!");
 }
 
+
+// =====================================================
 // === Main loop ===
+// =====================================================
 void loop() {
   unsigned long now = micros();
 
-  // Each of these functions has "catch-up" delay logic which maintains target frequencies
-
-  // IMU @ 100 Hz 
+  // --- IMU update (100 Hz) ---
   if (now - lastIMU >= IMU_INTERVAL_US) {
     imuCount++;
     processIMU();
+    fuseIMUYaw();
     lastIMU += IMU_INTERVAL_US;
     if ((long)(now - lastIMU) >= IMU_INTERVAL_US)
       lastIMU = now;
   }
 
-  // IMU Print @ 20 Hz 
-  if (now - lastIMUPrint >= IMU_PRINT_INTERVAL_US) {
-    imuPrintCount++;
-    printIMU();
-    lastIMUPrint += IMU_PRINT_INTERVAL_US;
-    if ((long)(now - lastIMUPrint) >= IMU_PRINT_INTERVAL_US)
-      lastIMUPrint = now;
+  // --- Encoder localization (1 kHz) ---
+  if (now - lastLoc >= LOC_INTERVAL_US) {
+    localizationCount++;
+    processEncoderLocalization();
+    lastLoc += LOC_INTERVAL_US;
+    if ((long)(now - lastLoc) >= LOC_INTERVAL_US)
+      lastLoc = now;
   }
 
-  // Encoder @ 50 Hz 
-  if (now - lastEncoder >= ENCODER_INTERVAL_US) {
-    encoderCount++;
-    processEncoder();
-    lastEncoder += ENCODER_INTERVAL_US;
-    if ((long)(now - lastEncoder) >= ENCODER_INTERVAL_US)
-      lastEncoder = now;
-  }
-
-  // Encoder Print @ 20 Hz 
-  if (now - lastEncoderPrint >= ENCODER_PRINT_INTERVAL_US) {
-    encoderPrintCount++;
-    printEncoder();
-    lastEncoderPrint += ENCODER_PRINT_INTERVAL_US;
-    if ((long)(now - lastEncoderPrint) >= ENCODER_PRINT_INTERVAL_US)
-      lastEncoderPrint = now;
+  // --- Unified print (100 Hz) ---
+  if (now - lastPrint >= PRINT_INTERVAL_US) {
+    printCount++;
+    printAll();
+    lastPrint += PRINT_INTERVAL_US;
+    if ((long)(now - lastPrint) >= PRINT_INTERVAL_US)
+      lastPrint = now;
   }
 
   // Frequency monitor (1 Hz print) 
@@ -100,95 +109,89 @@ void loop() {
   unsigned long nowMs = millis();
     if (nowMs - lastFreqPrint >= 1000) {
       Serial.print("[FREQ] IMU: ");          Serial.print(imuCount);
-      Serial.print(" Hz, IMU Print: ");      Serial.print(imuPrintCount);
-      Serial.print(" Hz, Encoder: ");        Serial.print(encoderCount);
-      Serial.print(" Hz, Encoder Print: ");  Serial.print(encoderPrintCount);
+      Serial.print(" Hz, Localization: ");   Serial.print(localizationCount);
+      Serial.print(" Hz, Print: ");          Serial.print(printCount);
       Serial.println(" Hz");
 
-      imuCount = imuPrintCount = encoderCount = encoderPrintCount = 0;
+      imuCount = localizationCount = printCount = 0;
       lastFreqPrint = nowMs;
     }
   }
 }
 
 
-// =========================================================
-// === IMU Processing with Complementary Filter (100 Hz) ===
-// =========================================================
+// =====================================================
+// === IMU Processing (BNO055 fused orientation) ===
+// =====================================================
 void processIMU() {
-  // --- Read 14 bytes starting at ACCEL_XOUT_H ---
-  Wire.beginTransmission(MPU_ADDR);
-  Wire.write(0x3B);
-  Wire.endTransmission(false);
-  Wire.requestFrom(MPU_ADDR, 14, true);
+  sensors_event_t orientationData;
+  bno.getEvent(&orientationData, Adafruit_BNO055::VECTOR_EULER);
 
-  int16_t a_x = Wire.read() << 8 | Wire.read();
-  int16_t a_y = Wire.read() << 8 | Wire.read();
-  int16_t a_z = Wire.read() << 8 | Wire.read();
-  Wire.read(); Wire.read(); // skip temp
-  int16_t g_x = Wire.read() << 8 | Wire.read();
-  int16_t g_y = Wire.read() << 8 | Wire.read();
-  int16_t g_z = Wire.read() << 8 | Wire.read();
-
-  // --- Convert to physical units ---
-  const float gyro_sensitivity = 131.0;
-  const float acc_sensitivity = 16384.0; // for ±2g
-
-  float gx = (g_x / gyro_sensitivity - gx_offset) * DEG_TO_RAD;
-  float gy = (g_y / gyro_sensitivity - gy_offset) * DEG_TO_RAD;
-  float gz = (g_z / gyro_sensitivity - gz_offset) * DEG_TO_RAD;
-
-  float ax = a_x / acc_sensitivity;
-  float ay = a_y / acc_sensitivity;
-  float az = a_z / acc_sensitivity;
-
-  static unsigned long last_us = micros();
-  unsigned long now = micros();
-  float dt = (now - last_us) * 1e-6f;
-  last_us = now;
-
-  // 1. Integrate gyro
-  roll  += gx * dt * RAD_TO_DEG;
-  pitch += gy * dt * RAD_TO_DEG;
-  yaw   += gz * dt * RAD_TO_DEG;
-
-  // 2. Compute accel-based roll/pitch
-  float acc_roll  = atan2(ay, az) * RAD_TO_DEG;
-  float acc_pitch = atan2(-ax, sqrt(ay * ay + az * az)) * RAD_TO_DEG;
-
-  // 3. Complementary filter
-  const float alpha = 0.95f;
-  roll  = alpha * roll  + (1 - alpha) * acc_roll;
-  pitch = alpha * pitch + (1 - alpha) * acc_pitch;
-
-  // 4. Normalize yaw
-  if (yaw > 180.0f) yaw -= 360.0f;
-  else if (yaw < -180.0f) yaw += 360.0f;
+  roll  = orientationData.orientation.x;
+  pitch = orientationData.orientation.y;
+  yaw   = orientationData.orientation.z;
 }
 
-void printIMU() {
-  Serial.print("sensor.imu.roll:");
-  Serial.println(roll);
-  Serial.print("sensor.imu.pitch:");
-  Serial.println(pitch);
-  Serial.print("sensor.imu.yaw:");
-  Serial.println(yaw);
-}
 
 // =====================================================
-// === Motor encoder processing (100 Hz) ================
+// === Encoder-based localization (1 kHz) ===
 // =====================================================
-void processEncoder() {
-  double now = millis()/1.0e3;
-  // leftEncoder += 20;
-  // rightEncoder += 20;
-  leftEncoder += (int)(100 * (0.3*sin(0.103*now + 0.314*cos(0.063*now)) + 0.7*cos(0.1*tan(0.01*now) + 0.084*now + 0.143*cos(0.01*now))));
-  rightEncoder += (int)(100 * (0.45*cos(0.03*now - 0.287*sin(0.021*now)) + 0.55*sin(0.153*now - 0.09*sin(0.061*now))));
+Encoder leftEnc(2, 3);
+Encoder rightEnc(4, 5);
+
+void processEncoderLocalization() {
+  long newLeft = leftEnc.read();
+  long newRight = rightEnc.read();
+
+  long deltaLeft = newLeft - lastLeft;
+  long deltaRight = newRight - lastRight;
+
+  lastLeft = newLeft;
+  lastRight = newRight;
+
+  float distLeft = (deltaLeft / TICKS_PER_REV) * (M_PI * WHEEL_DIAMETER) / GEAR_RATIO;
+  float distRight = (deltaRight / TICKS_PER_REV) * (M_PI * WHEEL_DIAMETER) / GEAR_RATIO;
+
+  float deltaDist = (distLeft + distRight) / 2.0;
+  float deltaHeading = (distRight - distLeft) / WHEEL_BASE;
+
+  poseX += deltaDist * cosf(poseH + deltaHeading / 2.0);
+  poseY += deltaDist * sinf(poseH + deltaHeading / 2.0);
+  poseH += deltaHeading;
+
+  // Normalize heading to [-pi, pi]
+  if (poseH > M_PI) poseH -= 2 * M_PI;
+  else if (poseH < -M_PI) poseH += 2 * M_PI;
 }
 
-void printEncoder() {
-  Serial.print("sensor.encoder.left:");
-  Serial.println(leftEncoder);
-  Serial.print("sensor.encoder.right:");
-  Serial.println(rightEncoder);
+
+// =====================================================
+// === Fuse IMU yaw with odometry heading (100 Hz) ===
+// =====================================================
+void fuseIMUYaw() {
+  float imuYawRad = yaw * DEG_TO_RAD;
+
+  float x_h = cosf(poseH), y_h = sinf(poseH);
+  float x_imu = cosf(imuYawRad), y_imu = sinf(imuYawRad);
+
+  float x_bar = ALPHA * x_imu + (1.0 - ALPHA) * x_h;
+  float y_bar = ALPHA * y_imu + (1.0 - ALPHA) * y_h;
+
+  poseH = atan2f(y_bar, x_bar);
+}
+
+
+// =====================================================
+// === Unified print (100 Hz) ===
+// =====================================================
+vvoid printAll() {
+  Serial.print(F("sensor.encoder.left:")); Serial.print(leftEnc.read());
+  Serial.print(F(",sensor.encoder.right:")); Serial.print(rightEnc.read());
+  Serial.print(F(",sensor.imu.roll:")); Serial.print(roll);
+  Serial.print(F(",sensor.imu.pitch:")); Serial.print(pitch);
+  Serial.print(F(",sensor.imu.yaw:")); Serial.print(yaw);
+  Serial.print(F(",localization.x:")); Serial.print(poseX, 6);
+  Serial.print(F(",localization.y:")); Serial.print(poseY, 6);
+  Serial.print(F(",localization.h:")); Serial.print(poseH * RAD_TO_DEG, 3);
+  Serial.println();
 }
