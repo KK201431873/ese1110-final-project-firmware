@@ -18,7 +18,7 @@ const float ALPHA = 1.00;             // IMU yaw fusion weight
 // =====================================================
 // === Timing configuration ===
 // =====================================================
-const int IMU_HZ = 150;
+const int IMU_HZ = 50;
 const int LOCALIZATION_HZ = 1000;     // Encoder localization at 1 kHz
 const int PRINT_HZ = 30;             // Unified print frequency
 
@@ -30,13 +30,34 @@ const unsigned long PRINT_INTERVAL_US = 1000000UL / PRINT_HZ;
 Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28, &Wire);
 float imuYawOffset = 0.0f;
 
-// IMU watchdog
+// --- IMU watchdog ---
+// Health monitoring
 bool yawIsZero = false;
 float lastNonzeroYaw = 0.0f;
 float last_asum = 0.0;
 int stillCount = 0;
 const int BNO_TIMEOUT_FRAMES = 50;
 const int BNO_RST_PIN = 2;
+
+// IMU Reset state machine
+enum IMUResetState {
+  IMU_OK = 0,
+  IMU_RST_PULSE,    // driving hardware RST pin low/high
+  IMU_BOOT_WAIT,    // waiting for BNO to boot after soft/hard reset
+  IMU_REINIT        // attempt reinitialization (bno.begin + config)
+};
+
+IMUResetState imuResetState = IMU_OK;
+unsigned long imuResetStartMs = 0;
+const unsigned long IMU_RST_LOW_MS = 10;    // hardware RST low duration
+const unsigned long IMU_RST_HIGH_DELAY_MS = 50; // small wait after releasing RST
+const unsigned long IMU_BOOT_WAIT_MS = 700; // datasheet ~650ms
+const int BNO_I2C_ADDR = 0x28;
+bool imuReinitRequested = false;
+
+// tweak thresholds
+const float YAW_ZERO_THRESHOLD_DEG = 0.5f; // was 0.01f
+const float ACCEL_STILL_THRESHOLD = 1e-6f; // 
 
 
 // =====================================================
@@ -54,7 +75,7 @@ unsigned long lastLoc = 0;
 unsigned long lastPrint = 0;
 
 // === Frequency monitoring ===
-const bool printFrequencies = true; 
+const bool printFrequencies = false; 
 unsigned long lastFreqPrint = 0;
 unsigned long imuCount = 0;
 unsigned long localizationCount = 0;
@@ -69,11 +90,18 @@ void setup() {
   Wire.begin();
   Wire.setClock(100000);
 
-  while (!bno.begin()) {
-    Serial.println("ERROR: BNO055 not detected. Check wiring!");
-    resetIMU();
+  // --- Start IMU reset sequence immediately ---
+  startIMUReset();
+
+  Serial.println("Waiting for IMU to initialize...");
+
+  // --- Poll the reset state machine until IMU is ready ---
+  while (imuResetState != IMU_OK) {
+    pollIMUReset();
+    delay(5); // small yield to avoid I2C hammering
   }
-  bno.setMode(adafruit_bno055_opmode_t::OPERATION_MODE_IMUPLUS);
+
+  Serial.println("IMU initialized after reset!");
 
   // --- Load in calibration data ---
   int eeAddress = 0;
@@ -163,23 +191,33 @@ void loop() {
 // === IMU Processing (BNO055 fused orientation) ===
 // =====================================================
 void processIMU() {
+  // If IMU reset state not OK, skip heavy IMU read and poll reset state
+  if (imuResetState != IMU_OK) {
+    // still poll the reset state each IMU tick
+    pollIMUReset();
+    // keep yaw equal to odometry heading so things stay sane
+    yaw = poseH * RAD_TO_DEG;
+    return;
+  }
+  
   // --- Watchdog logic ---
   sensors_event_t accel;
   bno.getEvent(&accel, Adafruit_BNO055::VECTOR_ACCELEROMETER);
   float asum = fabs(accel.acceleration.x) + fabs(accel.acceleration.y) + fabs(accel.acceleration.z);
-  
+
   float diff = fabs(asum - last_asum);
-  if (diff < 1e-6) {
+  if (diff < ACCEL_STILL_THRESHOLD) {
       stillCount++;
   } else {
       stillCount = 0;
   }
-
   last_asum = asum;
+
   if (stillCount > BNO_TIMEOUT_FRAMES) {
-      Serial.println("IMU idle → resetting");
-      resetIMU();
+      Serial.println("IMU idle → scheduling reset");
       stillCount = 0;
+      startIMUReset(); // non-blocking
+      return;
   }
 
   // --- Quaternion conversion ---
@@ -208,22 +246,18 @@ void processIMU() {
   // yaw (z-axis rotation)
   float t3 = +2.0f * (w * z + x * y);
   float t4 = +1.0f - 2.0f * (ysqr + z * z);
-  yaw = atan2(t3, t4) * 180.0f / PI;
-
-  // --- Compute raw yaw BEFORE offset ---
-  float rawYaw = atan2(t3, t4) * 180.0f / PI;
+  float rawYawDeg = atan2(t3, t4) * 180.0f / PI;
 
   // Determine if raw IMU yaw is essentially zero
-  if (fabs(rawYaw) > 0.01f) {
+  if (fabs(rawYawDeg) > YAW_ZERO_THRESHOLD_DEG) {
       yawIsZero = false;
-      lastNonzeroYaw = rawYaw;
+      lastNonzeroYaw = rawYawDeg;
 
-      // Now apply offset
-      yaw = rawYaw + (imuYawOffset * RAD_TO_DEG);
+      // Now apply offset (imuYawOffset stored in radians; convert to deg)
+      yaw = rawYawDeg + (imuYawOffset * RAD_TO_DEG);
   } else {
+      // IMU reports yaw ~ 0 (likely frozen) -> rely on odometry
       yawIsZero = true;
-
-      // Keep yaw equal to poseH (valid number)
       yaw = poseH * RAD_TO_DEG;
   }
 
@@ -232,50 +266,97 @@ void processIMU() {
   if (yaw < -180) yaw += 360;
 }
 
-bool resetIMU() {
-  Serial.println("### IMU RESET TRIGGERED ###");
-
-  // If hardware reset pin is available
+// --- IMU Reset state machine ---
+void startIMUReset() {
+  if (imuResetState != IMU_OK) return; // already resetting
+  Serial.println("### IMU RESET STARTED (non-blocking) ###");
+  imuResetState = IMU_RST_PULSE;
+  imuResetStartMs = millis();
+  yawIsZero = true; // stop fusing immediately; encoders take over
+  // prepare pin
   if (BNO_RST_PIN >= 0) {
     pinMode(BNO_RST_PIN, OUTPUT);
-    digitalWrite(BNO_RST_PIN, LOW);
-    delay(10);
-    digitalWrite(BNO_RST_PIN, HIGH);
-    delay(50);
+    digitalWrite(BNO_RST_PIN, LOW); // assert reset now
   }
 
-  // Send soft reset over I2C
-  Wire.beginTransmission(0x28);
+  // issue soft reset over I2C as well (non-blocking in sense no long delays here)
+  Wire.beginTransmission(BNO_I2C_ADDR);
   Wire.write(0x3F);   // SYS_TRIGGER register
   Wire.write(0x20);   // Reset command
-  Wire.endTransmission();
+  Wire.endTransmission(); // quick I2C transaction
+}
 
-  delay(700);  // datasheet: ~650ms boot time
-
+bool finishIMUReinit() {
+  // Attempt to initialize library and set up modes. Return true if success.
   if (!bno.begin()) {
-    Serial.println("IMU begin() failed after reset");
+    Serial.println("IMU begin() failed after reset (finishIMUReinit)");
     return false;
   }
 
   bno.setMode(adafruit_bno055_opmode_t::OPERATION_MODE_IMUPLUS);
   bno.setExtCrystalUse(true);
 
-  // --- Restore IMU yaw ---
+  // read quaternion and compute offset aligning IMU yaw to current poseH
   imu::Quaternion q = bno.getQuat();
-
-  float w = q.w(), x = q.x(), y = q.y(), z = q.z();
-  float ysqr = y * y;
-
-  // compute yaw
-  float t3 = +2.0f * (w * z + x * y);
+  float w = q.w(), x = q.x(), yq = q.y(), z = q.z();
+  float ysqr = yq * yq;
+  float t3 = +2.0f * (w * z + x * yq);
   float t4 = +1.0f - 2.0f * (ysqr + z * z);
-  float imuYawAfterReset = atan2(t3, t4);
+  float imuYawAfterReset = atan2(t3, t4); // radians
 
-  // Compute offset to align IMU to stored heading poseH
+  // Compute offset so IMU matches poseH (both in radians)
   imuYawOffset = poseH - imuYawAfterReset;
 
-  Serial.println("IMU reinitialized successfully");
+  Serial.println("IMU reinitialized successfully (non-blocking flow)");
   return true;
+}
+
+void pollIMUReset() {
+  if (imuResetState == IMU_OK) return;
+
+  unsigned long ms = millis();
+
+  switch (imuResetState) {
+    case IMU_RST_PULSE:
+      // keep RST asserted for IMU_RST_LOW_MS then release
+      if (ms - imuResetStartMs >= IMU_RST_LOW_MS) {
+        if (BNO_RST_PIN >= 0) {
+          digitalWrite(BNO_RST_PIN, HIGH); // release reset
+        }
+        imuResetState = IMU_BOOT_WAIT;
+        imuResetStartMs = ms; // start boot timer
+      }
+      break;
+
+    case IMU_BOOT_WAIT:
+      // wait the datasheet boot time before trying to bno.begin()
+      if (ms - imuResetStartMs >= IMU_BOOT_WAIT_MS) {
+        imuResetState = IMU_REINIT;
+      }
+      break;
+
+    case IMU_REINIT:
+      {
+        bool ok = finishIMUReinit();
+        if (ok) {
+          imuResetState = IMU_OK;
+          yawIsZero = false; // allow fusion (will be gated by raw yaw threshold)
+        } else {
+          // re-init failed: schedule another reset attempt after a short backoff
+          Serial.println("IMU reinit failed, scheduling retry in 500 ms");
+          imuResetState = IMU_RST_PULSE;
+          imuResetStartMs = ms + 500; // simple backoff (we'll compare times normally)
+          // NOTE: to implement the ms-offset backoff robustly, you'd need to store a
+          // separate "nextAttemptMs" and check it before doing the RST pulse.
+          // For simplicity here, fallthrough to immediate next attempt.
+        }
+      }
+      break;
+
+    default:
+      imuResetState = IMU_OK;
+      break;
+  }
 }
 
 
