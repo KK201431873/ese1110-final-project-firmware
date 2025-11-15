@@ -2,20 +2,30 @@
 
 #define INTAKE_SERVO_PIN 3
 
+
 // === Timing configuration ===
-const int SERVO_HZ = 100;
-const unsigned long SERVO_INTERVAL_US = 1000000UL / SERVO_HZ;
+const int INTAKE_SERVO_HZ = 100;
+const int DRIVE_MOTORS_HZ = 100;
+const unsigned long INTAKE_SERVO_INTERVAL_US = 1000000UL / INTAKE_SERVO_HZ;
+const unsigned long DRIVE_MOTORS_INTERVAL_US = 1000000UL / DRIVE_MOTORS_HZ;
+
+// === Timing trackers ===
+unsigned long lastIntakeServo = 0;
+unsigned long lastDriveMotors = 0;
+
+// === Frequency monitoring ===
+const bool printFrequencies = false; 
+unsigned long intakeServoCount = 0;
+unsigned long driveMotorsCount = 0;
+
 
 // === Servo ===
 Servo intakeServo;
 int intakeServoTargetDeg = 90;  // default position (degrees)
 
-// === Timing trackers ===
-unsigned long lastServo = 0;
-
-// === Frequency monitoring ===
-const bool printFrequencies = false; 
-unsigned long servoCount = 0;
+// === Drive motors ===
+#define LEFT_DRIVE_LPWM_PIN 9
+#define LEFT_DRIVE_RPWM_PIN 10
 
 
 // === Setup ===
@@ -24,22 +34,33 @@ void setup() {
 
   intakeServo.attach(INTAKE_SERVO_PIN);
   intakeServo.write(intakeServoTargetDeg);
+
+  // Left drive motor
+  pinMode(LEFT_DRIVE_LPWM_PIN, OUTPUT);
+  pinMode(LEFT_DRIVE_RPWM_PIN, OUTPUT);
+  setLeftDrivePower(0);
 }
 
 // === Main loop ===
 void loop() {
   unsigned long now = micros();
 
-  // Each of these functions has "catch-up" delay logic which maintains target frequencies
+  // Intake servo control
+  if (now - lastIntakeServo >= INTAKE_SERVO_INTERVAL_US) {
+    intakeServoCount++;
+    updateIntakeServo();
+    lastIntakeServo += INTAKE_SERVO_INTERVAL_US;
+    if ((long)(now - lastIntakeServo) >= INTAKE_SERVO_INTERVAL_US)
+      lastIntakeServo = now;
+  }
 
-
-  // Servo Control @ 20 Hz 
-  if (now - lastServo >= SERVO_INTERVAL_US) {
-    servoCount++;
-    updateServo();
-    lastServo += SERVO_INTERVAL_US;
-    if ((long)(now - lastServo) >= SERVO_INTERVAL_US)
-      lastServo = now;
+  // Drive motor control
+  if (now - lastDriveMotors >= DRIVE_MOTORS_INTERVAL_US) {
+    driveMotorsCount++;
+    updateDriveMotors();
+    lastDriveMotors += DRIVE_MOTORS_INTERVAL_US;
+    if ((long)(now - lastDriveMotors) >= DRIVE_MOTORS_INTERVAL_US)
+      lastDriveMotors = now;
   }
 
   // Serial input (asynchronous) 
@@ -50,10 +71,10 @@ void loop() {
   static unsigned long lastFreqPrint = 0;
   unsigned long nowMs = millis();
     if (nowMs - lastFreqPrint >= 1000) {
-      Serial.print("[FREQ] Servo: ");          Serial.print(servoCount);
+      Serial.print("[FREQ] Servo: ");          Serial.print(intakeServoCount);
       Serial.println(" Hz");
 
-      servoCount = 0;
+      intakeServoCount = 0;
       lastFreqPrint = nowMs;
     }
   }
@@ -61,10 +82,31 @@ void loop() {
 
 
 // =====================================================
-// === Servo update (20 Hz) ============================
+// === Servo update ============================
 // =====================================================
-void updateServo() {
+void updateIntakeServo() {
   intakeServo.write(intakeServoTargetDeg);
+}
+
+
+// =====================================================
+// === Motor update ============================
+// =====================================================
+void updateDriveMotors() {
+  double now = millis()/1.0e3;
+  int power = (int) (255*sin(now));
+  setLeftDrivePower(power);
+}
+
+void setLeftDrivePower(int leftPower) {
+  leftPower = max(-255, min(255, leftPower));
+  if (leftPower >= 0) {
+    analogWrite(LEFT_DRIVE_RPWM_PIN, abs(leftPower));
+    analogWrite(LEFT_DRIVE_LPWM_PIN, 0);
+  } else {
+    analogWrite(LEFT_DRIVE_RPWM_PIN, 0);
+    analogWrite(LEFT_DRIVE_LPWM_PIN, abs(leftPower));
+  }
 }
 
 // =====================================================
