@@ -21,11 +21,15 @@ unsigned long driveMotorsCount = 0;
 
 // === Servo ===
 Servo intakeServo;
-int intakeServoTargetDeg = 90;  // default position (degrees)
+int intakeServoTarget = 90;  // default position (degrees)
 
 // === Drive motors ===
-#define LEFT_DRIVE_LPWM_PIN 9
-#define LEFT_DRIVE_RPWM_PIN 10
+#define LEFT_DRIVE_LPWM_PIN 5
+#define LEFT_DRIVE_RPWM_PIN 6
+#define RIGHT_DRIVE_LPWM_PIN 9
+#define RIGHT_DRIVE_RPWM_PIN 10
+int leftDrivePower = 0;
+int rightDrivePower = 0;
 
 
 // === Setup ===
@@ -33,7 +37,7 @@ void setup() {
   Serial.begin(115200);
 
   intakeServo.attach(INTAKE_SERVO_PIN);
-  intakeServo.write(intakeServoTargetDeg);
+  intakeServo.write(intakeServoTarget);
 
   // Left drive motor
   pinMode(LEFT_DRIVE_LPWM_PIN, OUTPUT);
@@ -85,7 +89,7 @@ void loop() {
 // === Servo update ============================
 // =====================================================
 void updateIntakeServo() {
-  intakeServo.write(intakeServoTargetDeg);
+  intakeServo.write(intakeServoTarget);
 }
 
 
@@ -93,9 +97,8 @@ void updateIntakeServo() {
 // === Motor update ============================
 // =====================================================
 void updateDriveMotors() {
-  double now = millis()/1.0e3;
-  int power = (int) (255*sin(now));
-  setLeftDrivePower(power);
+  setLeftDrivePower(leftDrivePower);
+  setRightDrivePower(rightDrivePower);
 }
 
 void setLeftDrivePower(int leftPower) {
@@ -106,6 +109,17 @@ void setLeftDrivePower(int leftPower) {
   } else {
     analogWrite(LEFT_DRIVE_RPWM_PIN, 0);
     analogWrite(LEFT_DRIVE_LPWM_PIN, abs(leftPower));
+  }
+}
+
+void setRightDrivePower(int rightPower) {
+  rightPower = max(-255, min(255, rightPower));
+  if (rightPower >= 0) {
+    analogWrite(RIGHT_DRIVE_RPWM_PIN, abs(rightPower));
+    analogWrite(RIGHT_DRIVE_LPWM_PIN, 0);
+  } else {
+    analogWrite(RIGHT_DRIVE_RPWM_PIN, 0);
+    analogWrite(RIGHT_DRIVE_LPWM_PIN, abs(rightPower));
   }
 }
 
@@ -126,17 +140,19 @@ void processSerial() {
         String valStr = buffer.substring(sepIndex + 1);
 
         if (key == "command.intake.position") {
-          int val = valStr.toInt();
-          intakeServoTargetDeg = constrain(val, 0, 180);
+          int val = (int)(valStr.toDouble() * 180.0);
+          intakeServoTarget = constrain(val, 0, 180);
         } 
         else if (key == "command.intake.motor") {
           // handle intake speed control
         } 
         else if (key == "command.drive.left") {
-          // handle left motor speed
+          int val = (int)(valStr.toDouble() * 255.0);
+          leftDrivePower = constrain(val, -255, 255);
         } 
         else if (key == "command.drive.right") {
-          // handle right motor speed
+          int val = (int)(valStr.toDouble() * 255.0);
+          rightDrivePower = constrain(val, -255, 255);
         }
       }
       buffer = "";
