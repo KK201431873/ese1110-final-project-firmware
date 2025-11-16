@@ -28,6 +28,8 @@ int intakeServoTarget = 90;  // default position (degrees)
 #define LEFT_DRIVE_RPWM_PIN 6
 #define RIGHT_DRIVE_LPWM_PIN 9
 #define RIGHT_DRIVE_RPWM_PIN 10
+const bool INVERT_LEFT_DRIVE = false;
+const bool INVERT_RIGHT_DRIVE = true;
 int leftDrivePower = 0;
 int rightDrivePower = 0;
 
@@ -122,6 +124,7 @@ void updateDriveMotors() {
 
 void setLeftDrivePower(int leftPower) {
   leftPower = max(-255, min(255, leftPower));
+  if (INVERT_LEFT_DRIVE) leftPower *= -1;
   if (leftPower >= 0) {
     analogWrite(LEFT_DRIVE_RPWM_PIN, abs(leftPower));
     analogWrite(LEFT_DRIVE_LPWM_PIN, 0);
@@ -133,6 +136,7 @@ void setLeftDrivePower(int leftPower) {
 
 void setRightDrivePower(int rightPower) {
   rightPower = max(-255, min(255, rightPower));
+  if (INVERT_RIGHT_DRIVE) rightPower *= -1;
   if (rightPower >= 0) {
     analogWrite(RIGHT_DRIVE_RPWM_PIN, abs(rightPower));
     analogWrite(RIGHT_DRIVE_LPWM_PIN, 0);
