@@ -19,7 +19,7 @@ unsigned long intakeServoCount = 0;
 unsigned long driveMotorsCount = 0;
 
 
-// === Servo ===
+// === Intake ===
 Servo intakeServo;
 int intakeServoTarget = 90;  // default position (degrees)
 
@@ -30,6 +30,12 @@ int intakeServoTarget = 90;  // default position (degrees)
 #define RIGHT_DRIVE_RPWM_PIN 10
 int leftDrivePower = 0;
 int rightDrivePower = 0;
+
+// === Motor run-on prevention ===
+const unsigned long MOTOR_COMMAND_TIMEOUT = 1000; // 1sec without a drive command stops the motor
+unsigned long lastLeftDriveCommand = 0;
+unsigned long lastRightDriveCommand = 0;
+unsigned long lastIntakeMotorCommand = 0;
 
 
 // === Setup ===
@@ -97,8 +103,21 @@ void updateIntakeServo() {
 // === Motor update ============================
 // =====================================================
 void updateDriveMotors() {
-  setLeftDrivePower(leftDrivePower);
-  setRightDrivePower(rightDrivePower);
+  unsigned long nowMs = millis();
+
+  // Left
+  if (nowMs - lastLeftDriveCommand < MOTOR_COMMAND_TIMEOUT) {
+    setLeftDrivePower(leftDrivePower);
+  } else {
+    setLeftDrivePower(0);
+  }
+
+  // Right
+  if (nowMs - lastRightDriveCommand < MOTOR_COMMAND_TIMEOUT) {
+    setRightDrivePower(rightDrivePower);
+  } else {
+    setRightDrivePower(0);
+  }
 }
 
 void setLeftDrivePower(int leftPower) {
@@ -145,14 +164,17 @@ void processSerial() {
         } 
         else if (key == "command.intake.motor") {
           // handle intake speed control
+          lastIntakeMotorCommand = millis();
         } 
         else if (key == "command.drive.left") {
           int val = (int)(valStr.toDouble() * 255.0);
           leftDrivePower = constrain(val, -255, 255);
+          lastLeftDriveCommand = millis();
         } 
         else if (key == "command.drive.right") {
           int val = (int)(valStr.toDouble() * 255.0);
           rightDrivePower = constrain(val, -255, 255);
+          lastRightDriveCommand = millis();
         }
       }
       buffer = "";
