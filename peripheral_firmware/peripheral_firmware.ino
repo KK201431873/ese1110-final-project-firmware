@@ -13,7 +13,7 @@ const float WHEEL_DIAMETER = 0.065;  // m
 const float WHEEL_BASE = 0.332;      // m
 const float TICKS_PER_REV = 1024.0;
 const float GEAR_RATIO = 1.0;
-const float ALPHA = 1.00;  // IMU yaw fusion weight
+const float ALPHA = 0.05;  // IMU yaw fusion weight
 
 // =====================================================
 // === Timing configuration ===
@@ -85,6 +85,11 @@ unsigned long printCount = 0;
 // =====================================================
 // === Setup ===
 // =====================================================
+
+void myCallback() {
+  Serial.println("RESETTING!");
+}
+
 void setup() {
   Serial.begin(115200);
   Wire.begin();
@@ -365,6 +370,8 @@ void pollIMUReset() {
 // =====================================================
 Encoder leftEnc(2, 3);
 Encoder rightEnc(4, 5);
+const bool INVERT_LEFT_DRIVE = false;
+const bool INVERT_RIGHT_DRIVE = true;
 
 void processEncoderLocalization() {
   long newLeft = leftEnc.read();
@@ -372,6 +379,8 @@ void processEncoderLocalization() {
 
   long deltaLeft = newLeft - leftEncoder;
   long deltaRight = newRight - rightEncoder;
+  if (INVERT_LEFT_DRIVE) deltaLeft *= -1;
+  if (INVERT_RIGHT_DRIVE) deltaRight *= -1;
 
   leftEncoder = newLeft;
   rightEncoder = newRight;

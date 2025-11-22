@@ -1,7 +1,5 @@
 #include <Servo.h>
 
-#define INTAKE_SERVO_PIN 3
-
 
 // === Timing configuration ===
 const int SERVO_LOOP_HZ = 100;
@@ -20,6 +18,7 @@ unsigned long motorsLoopCount = 0;
 
 
 // === Intake ===
+#define INTAKE_SERVO_PIN A0
 Servo intakeServo;
 int intakeServoTarget = 90;  // default position (degrees)
 
@@ -142,9 +141,6 @@ void updateMotors() {
   } else {
     setIntakePower(0);
   }
-
-  // TODO: REMOVE (TESTING)
-  setLeftDrivePower(leftDrivePower);
 }
 
 void setLeftDrivePower(int leftPower) {
