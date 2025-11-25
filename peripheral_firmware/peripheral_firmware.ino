@@ -9,11 +9,11 @@
 // =====================================================
 // === Robot configuration ===
 // =====================================================
-const float WHEEL_DIAMETER = 0.065;  // m
-const float WHEEL_BASE = 0.332;      // m
-const float TICKS_PER_REV = 1024.0;
-const float GEAR_RATIO = 1.0;
-const float ALPHA = 0.05;  // IMU yaw fusion weight
+float WHEEL_DIAMETER = 0.065;  // m
+float WHEEL_BASE = 0.332;      // m
+float TICKS_PER_REV = 1024.0;
+float GEAR_RATIO = 1.0;
+float ALPHA = 0.05;  // IMU yaw fusion weight
 
 // =====================================================
 // === Timing configuration ===
@@ -56,7 +56,7 @@ const int BNO_I2C_ADDR = 0x28;
 bool imuReinitRequested = false;
 
 // tweak thresholds
-const float YAW_ZERO_THRESHOLD_DEG = 0.5f;  // was 0.01f
+const float YAW_ZERO_THRESHOLD_DEG = 0.01f;  // was 0.5f
 const float ACCEL_STILL_THRESHOLD = 1e-6f;  //
 
 
@@ -171,6 +171,9 @@ void loop() {
     if ((long)(now - lastPrint) >= PRINT_INTERVAL_US)
       lastPrint = now;
   }
+
+  // Serial input (for IMU reset) 
+  processSerial();
 
   // Frequency monitor (1 Hz print)
   if (printFrequencies) {
@@ -374,6 +377,7 @@ const bool INVERT_LEFT_DRIVE = false;
 const bool INVERT_RIGHT_DRIVE = true;
 
 void processEncoderLocalization() {
+  // get deltas
   long newLeft = leftEnc.read();
   long newRight = rightEnc.read();
 
@@ -385,6 +389,7 @@ void processEncoderLocalization() {
   leftEncoder = newLeft;
   rightEncoder = newRight;
 
+  // localization math
   float distLeft = (deltaLeft / TICKS_PER_REV) * (M_PI * WHEEL_DIAMETER) / GEAR_RATIO;
   float distRight = (deltaRight / TICKS_PER_REV) * (M_PI * WHEEL_DIAMETER) / GEAR_RATIO;
 
@@ -414,6 +419,79 @@ void fuseIMUYaw() {
   float y_bar = ALPHA * y_imu + (1.0 - ALPHA) * y_h;
 
   poseH = atan2f(y_bar, x_bar);
+}
+
+
+// =====================================================
+// === Serial message parsing ==========================
+// =====================================================
+void processSerial() {
+  static String buffer = "";
+
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (buffer.length() == 0) continue;
+
+      int sepIndex = buffer.indexOf(':');
+      if (sepIndex > 0) {
+        String key = buffer.substring(0, sepIndex);
+        String valStr = buffer.substring(sepIndex + 1);
+
+        if (key == "set.imu.yaw") {
+          float val = valStr.toFloat();
+          float realYaw = yaw * PI / 180.0 - imuYawOffset;
+          imuYawOffset = val - realYaw;
+        }
+        else if (key == "set.encoder.left") {
+          int val = (int)(valStr.toFloat());
+          leftEncoder = val;
+          leftEnc.write(val);
+        }
+        else if (key == "set.encoder.right") {
+          int val = (int)(valStr.toFloat());
+          rightEncoder = val;
+          rightEnc.write(val);
+        }
+        else if (key == "set.localization.x") {
+          float val = valStr.toFloat();
+          poseX = val;
+        }
+        else if (key == "set.localization.y") {
+          float val = valStr.toFloat();
+          poseY = val;
+        }
+        else if (key == "set.localization.h") {
+          float val = valStr.toFloat();
+          poseH = val;
+        }
+        else if (key == "set.config.wheel_diameter") {
+          float val = valStr.toFloat();
+          WHEEL_DIAMETER = val;
+        }
+        else if (key == "set.config.wheel_base") {
+          float val = valStr.toFloat();
+          WHEEL_BASE = val;
+        }
+        else if (key == "set.config.ticks_per_rev") {
+          float val = valStr.toFloat();
+          TICKS_PER_REV = val;
+        }
+        else if (key == "set.config.gear_ratio") {
+          float val = valStr.toFloat();
+          GEAR_RATIO = val;
+        }
+        else if (key == "set.config.alpha") {
+          float val = valStr.toFloat();
+          ALPHA = val;
+        }
+      }
+      buffer = "";
+    } 
+    else {
+      buffer += c;
+    }
+  }
 }
 
 

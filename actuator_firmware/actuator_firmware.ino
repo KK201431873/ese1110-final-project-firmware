@@ -31,8 +31,8 @@ int intakeServoTarget = 90;  // default position (degrees)
 #define INTAKE_RPWM_PIN 11
 const bool INVERT_LEFT_DRIVE = false;
 const bool INVERT_RIGHT_DRIVE = true;
-const bool INVERT_INTAKE = false;
-const int MAXIMUM_INTAKE_PWM = 60;
+const bool INVERT_INTAKE = true;
+const int MAXIMUM_INTAKE_PWM = 255;
 int leftDrivePower = 0;
 int rightDrivePower = 0;
 int intakePower = 0;
