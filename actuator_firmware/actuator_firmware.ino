@@ -20,7 +20,7 @@ unsigned long motorsLoopCount = 0;
 // === Intake ===
 #define INTAKE_SERVO_PIN A0
 Servo intakeServo;
-int intakeServoTarget = 90;  // default position (degrees)
+int intakeServoTarget = 173;  // default position (degrees)
 
 // === Drive motors ===
 #define LEFT_DRIVE_LPWM_PIN 3
